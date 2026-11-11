@@ -2,7 +2,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.github.wwwwwwwwwaaaaaaaaa</groupId>
   <artifactId>dsh-artifacts</artifactId>
-  <version>v10</version>
+  <version>v11</version>
   <packaging>jar</packaging>
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
